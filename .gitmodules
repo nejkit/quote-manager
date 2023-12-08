@@ -1,0 +1,4 @@
+
+[submodule "external/protos"]
+	path = external/protos
+	url = https://github.com/nejkit/processing-proto
