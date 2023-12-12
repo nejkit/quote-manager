@@ -2,6 +2,7 @@ package rabbit
 
 import (
 	"errors"
+	"quote-manager/routes"
 	"time"
 
 	"github.com/rabbitmq/amqp091-go"
@@ -20,6 +21,20 @@ func NewRabbitFactory(connectionString string) (*RabbitFactory, error) {
 
 	return &RabbitFactory{connection: con}, nil
 
+}
+
+func (f *RabbitFactory) Init() error {
+	ch, err := f.GetRmqChannel()
+	if err != nil {
+		return err
+	}
+	defer ch.Close()
+	ch.ExchangeDeclare("e.quotes.forward", "topic", true, false, false, false, nil)
+	ch.QueueDeclare(routes.QueueQuoteInfos, true, false, false, false, nil)
+	ch.QueueDeclare(routes.QueueUpdateQuotes, true, false, false, false, nil)
+	ch.QueueBind(routes.QueueQuoteInfos, routes.RkQuoteInfo, "e.quotes.forward", true, nil)
+	ch.QueueBind(routes.QueueUpdateQuotes, routes.RkOrderInfo, routes.ExNameOrders, true, nil)
+	return nil
 }
 
 func (f *RabbitFactory) GetRmqChannel() (*amqp091.Channel, error) {

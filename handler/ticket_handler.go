@@ -2,9 +2,11 @@ package handler
 
 import (
 	"context"
+	"quote-manager/external/orders"
 	"quote-manager/external/quotes"
 	"quote-manager/external/tickets"
 	"quote-manager/rabbit"
+	"quote-manager/routes"
 	"quote-manager/services"
 	"quote-manager/storage"
 	"time"
@@ -46,13 +48,20 @@ func (h *TicketHandler) Handle(ctx context.Context) {
 			}
 
 			switch ticketInfo.OperationType {
-			case tickets.OperationType_OPERATION_TYPE_QUOTE_UPDATE:
-				request := &quotes.UpdateQuoteRequest{}
+			case tickets.OperationType_OPERATION_TYPE_ORDER_INFO:
+				request := &orders.OrderInfo{}
 				if err := proto.Unmarshal(ticketInfo.Data, request); err != nil {
 					logger.Errorln(err.Error())
 					continue
 				}
 				go h.quoteService.UpdateMarket(ctx, request)
+			case tickets.OperationType_OPERATION_TYPE_SEND_QUOTES:
+				request := &quotes.MarketDeepthResponse{}
+				if err := proto.Unmarshal(ticketInfo.Data, request); err != nil {
+					logger.Errorln(err.Error())
+					continue
+				}
+				go h.quoteSender.SendMessage(ctx, "e.quotes.forward", routes.RkQuoteInfo, request)
 			default:
 				logger.Warningln("Ticket operation ", ticketInfo.OperationType, " unsupported, skipping...")
 				continue

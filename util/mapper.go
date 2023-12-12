@@ -1,8 +1,11 @@
 package util
 
 import (
+	"quote-manager/external/orders"
 	"quote-manager/external/quotes"
 	"quote-manager/storage"
+
+	"google.golang.org/protobuf/proto"
 )
 
 func MapDeepthInfoToProto(infos []storage.DeepthModel) []*quotes.MarketDeepthInfo {
@@ -37,4 +40,15 @@ func MapQuotesInfosToProto(infos []storage.QuoteModel) []*quotes.QuotesInfo {
 		})
 	}
 	return result
+}
+
+func GetParserForUpdateQuotesRequest() func([]byte) (*orders.OrderInfo, error) {
+	return func(b []byte) (*orders.OrderInfo, error) {
+		var request *orders.OrderInfo
+		err := proto.Unmarshal(b, request)
+		if err != nil {
+			return nil, err
+		}
+		return request, nil
+	}
 }

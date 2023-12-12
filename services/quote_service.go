@@ -3,7 +3,9 @@ package services
 import (
 	"context"
 	"quote-manager/errors"
+	"quote-manager/external/orders"
 	"quote-manager/external/quotes"
+	"quote-manager/external/tickets"
 	"quote-manager/storage"
 	"quote-manager/util"
 	"time"
@@ -20,22 +22,28 @@ func NewQuoteService(quoteStorage storage.QuoteManager) QuoteService {
 	return QuoteService{quoteStorage: quoteStorage}
 }
 
-func (q *QuoteService) UpdateMarket(ctx context.Context, request *quotes.UpdateQuoteRequest) error {
-	currentDeepth, err := q.quoteStorage.GetDeepth(ctx, request.CurrencyPair, request.Direction, request.Price)
-	if err != nil {
+func (q *QuoteService) UpdateMarket(ctx context.Context, request *orders.OrderInfo) error {
+
+	currentDeepth, err := q.quoteStorage.GetDeepth(ctx, request.CurrencyPair, int32(request.Direction), request.InitPrice)
+	if err != nil && err != errors.ErrorNotFound {
 		return err
 	}
 	if err == errors.ErrorNotFound {
 		currentDeepth = &storage.DeepthModel{
 			CurrencyPair: request.CurrencyPair,
-			Direction:    request.Direction,
+			Direction:    int32(request.Direction),
 		}
 	}
 
-	if request.OperationType == quotes.QuoteOperationType_QUOTE_OPERATION_TYPE_REMOVE_ORDER {
-		request.Volume *= -1
+	changeVolume := 0.0
+	changeVolume = request.InitVolume - request.FillVolume
+	changeVolume *= -1
+
+	if request.OrderState == orders.OrderState_ORDER_STATE_IN_PROCESS {
+		changeVolume = request.InitVolume
 	}
-	currentDeepth.Volume += request.Volume
+
+	currentDeepth.Volume += request.InitVolume
 	for {
 		if err := q.quoteStorage.TryLockDeepth(ctx, *currentDeepth); err != nil {
 			time.Sleep(1 * time.Millisecond)
@@ -50,23 +58,16 @@ func (q *QuoteService) UpdateMarket(ctx context.Context, request *quotes.UpdateQ
 		break
 	}
 
-	if request.GetFilledPrice() != 0 {
-		if err := q.updateQuote(ctx, request); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 
-func (q *QuoteService) updateQuote(ctx context.Context, request *quotes.UpdateQuoteRequest) error {
+func (q *QuoteService) updateQuote(ctx context.Context, request *orders.OrderInfo) error {
 	currentQuote, err := q.getQuote(ctx, request)
 	if err != nil {
 		logger.Errorln(err.Error())
 		return err
 	}
-	if currentQuote.Nonce > uint64(request.Nonce) {
-		return errors.ErrorNonceExpired
-	}
+
 	for {
 		if err := q.quoteStorage.TryLockQuote(ctx, *currentQuote); err != nil {
 			time.Sleep(time.Millisecond * 1)
@@ -77,7 +78,7 @@ func (q *QuoteService) updateQuote(ctx context.Context, request *quotes.UpdateQu
 
 	currentQuote, err = q.getQuote(ctx, request)
 
-	if currentQuote.Nonce > uint64(request.Nonce) {
+	if currentQuote.Nonce > uint64(request.Date.AsTime().UTC().UnixMilli()) {
 		q.quoteStorage.TryUnLockQuote(ctx, *currentQuote)
 		return errors.ErrorNonceExpired
 	}
@@ -92,16 +93,16 @@ func (q *QuoteService) updateQuote(ctx context.Context, request *quotes.UpdateQu
 
 }
 
-func (q *QuoteService) getQuote(ctx context.Context, request *quotes.UpdateQuoteRequest) (*storage.QuoteModel, error) {
-	currentQuote, err := q.quoteStorage.GetQuote(ctx, request.CurrencyPair, request.Direction)
-	if err != nil {
+func (q *QuoteService) getQuote(ctx context.Context, request *orders.OrderInfo) (*storage.QuoteModel, error) {
+	currentQuote, err := q.quoteStorage.GetQuote(ctx, request.CurrencyPair, int32(request.Direction))
+	if err != nil && err != errors.ErrorNotFound {
 		return nil, err
 	}
 	if err == errors.ErrorNotFound {
 		currentQuote = &storage.QuoteModel{
 			CurrencyPair: request.CurrencyPair,
-			Direction:    request.Direction,
-			Nonce:        uint64(request.Nonce),
+			Direction:    int32(request.Direction),
+			Nonce:        uint64(request.Date.AsTime().UTC().UnixMilli()),
 		}
 	}
 
@@ -109,17 +110,28 @@ func (q *QuoteService) getQuote(ctx context.Context, request *quotes.UpdateQuote
 
 }
 
-func (q *QuoteService) GetInfoAboutMarket(ctx context.Context, request *quotes.MarketDeepthRequest) {
-	quoteInfo, deepthInfo, err := q.quoteStorage.GetQuotes(ctx, request)
-	if err != nil {
-		return
-	}
-	quoteInfoProto := util.MapQuotesInfosToProto(quoteInfo)
-	deepthInfoProto := util.MapDeepthInfoToProto(deepthInfo)
-	response := quotes.MarketDeepthResponse{
-		Id:                request.Id,
-		MarketDeepthInfos: deepthInfoProto,
-		QuotesInfos:       quoteInfoProto,
-	}
+func (q *QuoteService) SendQuotesSheduller(ctx context.Context, request *quotes.MarketDeepthRequest) {
+	for {
+		quoteInfo, deepthInfo, err := q.quoteStorage.GetQuotes(ctx, request)
+		if err != nil {
+			return
+		}
+		quoteInfoProto := util.MapQuotesInfosToProto(quoteInfo)
+		deepthInfoProto := util.MapDeepthInfoToProto(deepthInfo)
+		response := quotes.MarketDeepthResponse{
+			Id:                request.Id,
+			MarketDeepthInfos: deepthInfoProto,
+			QuotesInfos:       quoteInfoProto,
+		}
+		q.ticketStorage.SaveTicketForOperation(ctx, tickets.OperationType_OPERATION_TYPE_SEND_QUOTES, &response)
+		time.Sleep(time.Second * 5)
 
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			continue
+		}
+
+	}
 }
