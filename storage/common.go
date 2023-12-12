@@ -5,6 +5,7 @@ import (
 	"quote-manager/errors"
 
 	redis "github.com/redis/go-redis/v9"
+	"github.com/sirupsen/logrus"
 )
 
 type RedisClient struct {
@@ -38,7 +39,11 @@ func (c *RedisClient) SetKeyNX(ctx context.Context, key string, value string) (b
 }
 
 func (c RedisClient) DelKey(ctx context.Context, id string) {
-	c.cli.Del(ctx, id)
+	res, err := c.cli.Del(ctx, id).Result()
+	if err != nil {
+		logrus.Errorln(err.Error())
+	}
+	logrus.Infoln("Deleted blocks: ", res)
 }
 
 func (c *RedisClient) GetKey(ctx context.Context, key string) (string, error) {

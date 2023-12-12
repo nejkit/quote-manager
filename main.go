@@ -14,23 +14,27 @@ import (
 	"quote-manager/util"
 	"syscall"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 func main() {
+	logrus.SetLevel(logrus.InfoLevel)
 	ctx := context.Background()
 	ctxWithCancel, cancel := context.WithCancel(ctx)
-	rmqFactory, err := rabbit.NewRabbitFactory("amqp://admin:admin@rabbitmq:5672")
+	rmqFactory, err := rabbit.NewRabbitFactory("amqp://admin:admin@localhost:5672")
 	rmqFactory.Init()
 	if err != nil {
 		return
 	}
-	redisClient := storage.NewRedisClient("redis:6379")
+	redisClient := storage.NewRedisClient("localhost:6379")
 	ticketStorage := storage.NewTicketStorage(redisClient)
 	quoteStorage := storage.NewQuoteManager(redisClient)
 	rmqSender, err := rmqFactory.GetSender()
 	if err != nil {
 		return
 	}
+
 	quoteService := services.NewQuoteService(quoteStorage)
 	handlerToStorage := handler.NewHandler(ticketStorage)
 	ticketHandler := handler.NewTicketHandler(ticketStorage, quoteService, *rmqSender)
@@ -40,6 +44,7 @@ func main() {
 		return
 	}
 	go ticketHandler.Handle(ctxWithCancel)
+	go quoteService.SendQuotesSheduller(ctxWithCancel)
 	go quoteListener.Run(ctxWithCancel)
 
 	exit := make(chan os.Signal, 1)

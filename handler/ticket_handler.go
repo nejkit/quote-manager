@@ -41,6 +41,7 @@ func (h *TicketHandler) Handle(ctx context.Context) {
 			if ticketInfo.State == tickets.TicketState_TICKET_STATE_PROCESSING || ticketInfo.State == tickets.TicketState_TICKET_STATE_DONE {
 				continue
 			}
+			logger.Infoln("Receive new ticket")
 			ticketInfo.State = tickets.TicketState_TICKET_STATE_PROCESSING
 			if err = h.ticketStore.UpdateTicket(ctx, ticketInfo); err != nil {
 				logger.Errorln(err.Error())

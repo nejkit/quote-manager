@@ -44,11 +44,11 @@ func MapQuotesInfosToProto(infos []storage.QuoteModel) []*quotes.QuotesInfo {
 
 func GetParserForUpdateQuotesRequest() func([]byte) (*orders.OrderInfo, error) {
 	return func(b []byte) (*orders.OrderInfo, error) {
-		var request *orders.OrderInfo
-		err := proto.Unmarshal(b, request)
+		var request orders.OrderInfo
+		err := proto.Unmarshal(b, &request)
 		if err != nil {
 			return nil, err
 		}
-		return request, nil
+		return &request, nil
 	}
 }

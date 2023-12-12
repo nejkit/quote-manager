@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"quote-manager/errors"
-	"quote-manager/external/quotes"
 
 	"github.com/google/uuid"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -45,7 +45,7 @@ func (q *QuoteManager) SetQuote(ctx context.Context, quoteModel QuoteModel) erro
 		return err
 	}
 
-	if err := q.client.InsertHash(ctx, QuoteHash, fmt.Sprintf("%s:%d", quoteModel.CurrencyPair, quoteModel.Direction), bytes); err != nil {
+	if err := q.client.InsertHash(ctx, QuoteHash, fmt.Sprintf("%s:%v", quoteModel.CurrencyPair, quoteModel.Direction), bytes); err != nil {
 		return err
 	}
 	return nil
@@ -57,14 +57,14 @@ func (q *QuoteManager) SetDeepth(ctx context.Context, deepthModel DeepthModel) e
 		return err
 	}
 
-	if err := q.client.InsertHash(ctx, DeepthHash, fmt.Sprintf("%s:%d:%d", deepthModel.CurrencyPair, deepthModel.Direction, deepthModel.Price), bytes); err != nil {
+	if err := q.client.InsertHash(ctx, DeepthHash, buildKeyForDeepth(deepthModel.CurrencyPair, deepthModel.Direction, deepthModel.Price), bytes); err != nil {
 		return err
 	}
 	return nil
 }
 
 func (q *QuoteManager) GetQuote(ctx context.Context, curPair string, direction int32) (*QuoteModel, error) {
-	result, err := q.client.GetFromHash(ctx, QuoteHash, fmt.Sprintf("%s:%d", curPair, direction))
+	result, err := q.client.GetFromHash(ctx, QuoteHash, fmt.Sprintf("%s:%v", curPair, direction))
 	if err != nil {
 		return nil, err
 	}
@@ -77,19 +77,20 @@ func (q *QuoteManager) GetQuote(ctx context.Context, curPair string, direction i
 }
 
 func (q *QuoteManager) GetDeepth(ctx context.Context, curPair string, direction int32, price float64) (*DeepthModel, error) {
-	result, err := q.client.GetFromHash(ctx, DeepthHash, fmt.Sprintf("%s:%d:%d", curPair, direction, price))
+	result, err := q.client.GetFromHash(ctx, DeepthHash, buildKeyForDeepth(curPair, direction, price))
 	if err != nil {
+		logrus.Infoln(err.Error(), buildKeyForDeepth(curPair, direction, price))
 		return nil, err
 	}
 	var deepthModel DeepthModel
-	if err = json.Unmarshal([]byte(*result), deepthModel); err != nil {
+	if err = json.Unmarshal([]byte(*result), &deepthModel); err != nil {
 		return nil, err
 	}
 	return &deepthModel, nil
 }
 
 func (q *QuoteManager) TryLockQuote(ctx context.Context, quoteInfo QuoteModel) error {
-	result, err := q.client.SetKeyNX(ctx, fmt.Sprintf("lock_quote_%s:%d", quoteInfo.CurrencyPair, quoteInfo.Direction), q.instanceId)
+	result, err := q.client.SetKeyNX(ctx, fmt.Sprintf("lock_quote_%s:%v", quoteInfo.CurrencyPair, quoteInfo.Direction), q.instanceId)
 	if err != nil {
 		return err
 	}
@@ -100,7 +101,7 @@ func (q *QuoteManager) TryLockQuote(ctx context.Context, quoteInfo QuoteModel) e
 }
 
 func (q *QuoteManager) TryLockDeepth(ctx context.Context, deepthInfo DeepthModel) error {
-	result, err := q.client.SetKeyNX(ctx, fmt.Sprintf("lock_deepth_%s:%d:%d", deepthInfo.CurrencyPair, deepthInfo.Direction, deepthInfo.Price), q.instanceId)
+	result, err := q.client.SetKeyNX(ctx, "lock_deepth:"+buildKeyForDeepth(deepthInfo.CurrencyPair, deepthInfo.Direction, deepthInfo.Price), q.instanceId)
 	if err != nil {
 		return err
 	}
@@ -111,7 +112,7 @@ func (q *QuoteManager) TryLockDeepth(ctx context.Context, deepthInfo DeepthModel
 }
 
 func (q *QuoteManager) TryUnLockQuote(ctx context.Context, quoteInfo QuoteModel) error {
-	value, err := q.client.GetKey(ctx, fmt.Sprintf("lock_quote_%s:%d", quoteInfo.CurrencyPair, quoteInfo.Direction))
+	value, err := q.client.GetKey(ctx, fmt.Sprintf("lock_quote_%s:%v", quoteInfo.CurrencyPair, quoteInfo.Direction))
 	if value != q.instanceId {
 		return nil
 	}
@@ -125,20 +126,25 @@ func (q *QuoteManager) TryUnLockQuote(ctx context.Context, quoteInfo QuoteModel)
 }
 
 func (q *QuoteManager) TryUnLockDeepth(ctx context.Context, deepthInfo DeepthModel) error {
-	value, err := q.client.GetKey(ctx, fmt.Sprintf("lock_deepth_%s:%d:%d", deepthInfo.CurrencyPair, deepthInfo.Direction, deepthInfo.Price))
+	value, err := q.client.GetKey(ctx, "lock_deepth:"+buildKeyForDeepth(deepthInfo.CurrencyPair, deepthInfo.Direction, deepthInfo.Price))
 	if value != q.instanceId {
+		logrus.Errorln("Instance id not match: ", q.instanceId, value)
 		return nil
 	}
 	if err == errors.ErrorNotFound {
+		logrus.Errorln("NotExistsBlock: ", "lock_deepth:"+buildKeyForDeepth(deepthInfo.CurrencyPair, deepthInfo.Direction, deepthInfo.Price))
 		return nil
 	}
 	if err != nil {
+		logrus.Errorln(err.Error())
 		return err
 	}
+	logrus.Infoln("Start delete block")
+	q.client.DelKey(ctx, "lock_deepth:"+buildKeyForDeepth(deepthInfo.CurrencyPair, deepthInfo.Direction, deepthInfo.Price))
 	return nil
 }
 
-func (q *QuoteManager) GetQuotes(ctx context.Context, request *quotes.MarketDeepthRequest) ([]QuoteModel, []DeepthModel, error) {
+func (q *QuoteManager) GetQuotes(ctx context.Context) ([]QuoteModel, []DeepthModel, error) {
 	quotesFromRedis, err := q.client.GetAllFromHash(ctx, QuoteHash)
 	if err != nil {
 		return nil, nil, err
@@ -164,4 +170,9 @@ func (q *QuoteManager) GetQuotes(ctx context.Context, request *quotes.MarketDeep
 		deepthModels = append(deepthModels, deepthModel)
 	}
 	return quoteModels, deepthModels, nil
+}
+
+func buildKeyForDeepth(curPair string, direction int32, price float64) string {
+	strPrice := fmt.Sprintf("%.*f", 2, price)
+	return curPair + ":" + fmt.Sprintf("%d", direction) + ":" + strPrice
 }
